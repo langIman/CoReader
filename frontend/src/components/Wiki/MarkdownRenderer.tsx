@@ -1,13 +1,15 @@
-import { useContext } from 'react'
+import { useContext, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js/lib/core'
 import python from 'highlight.js/lib/languages/python'
 import 'highlight.js/styles/github.css'
+import mermaid from 'mermaid'
 import { useWikiStore } from '../../store/useWikiStore'
 import { QACodeRefsContext } from '../QA/QACodeRefsContext'
 
 hljs.registerLanguage('python', python)
+mermaid.initialize({ startOnLoad: false, theme: 'dark' })
 
 interface Props {
   content: string
@@ -19,7 +21,27 @@ function stripLeadingNumber(t: string): string {
   return t.replace(/^\s*\d+\s*[.、:：)）]\s*/, '').trim()
 }
 
+function MermaidBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!ref.current) return
+    const id = `mermaid-${Math.random().toString(36).slice(2)}`
+    mermaid.render(id, code).then(({ svg }) => {
+      if (ref.current) ref.current.innerHTML = svg
+    }).catch(() => {
+      if (ref.current) ref.current.textContent = code
+    })
+  }, [code])
+  return <div ref={ref} className="my-4 flex justify-center" />
+}
+
+// 跳过 content_md 开头的 H1（WikiPageView header 已渲染标题，避免重复）
+function stripLeadingH1(md: string): string {
+  return md.replace(/^\s*#\s+[^\n]*\n?/, '')
+}
+
 export default function MarkdownRenderer({ content }: Props) {
+  const processedContent = stripLeadingH1(content)
   const navigateToPage = useWikiStore((s) => s.navigateToPage)
   const openCodeDrawer = useWikiStore((s) => s.openCodeDrawer)
   const openCodeDrawerWithRef = useWikiStore((s) => s.openCodeDrawerWithRef)
@@ -153,6 +175,9 @@ export default function MarkdownRenderer({ content }: Props) {
               )
             }
             const code = String(children).replace(/\n$/, '')
+            if (match && match[1] === 'mermaid') {
+              return <MermaidBlock code={code} />
+            }
             let html = code
             if (match && match[1] === 'python') {
               try {
@@ -197,7 +222,7 @@ export default function MarkdownRenderer({ content }: Props) {
           },
         }}
       >
-        {content}
+        {processedContent}
       </ReactMarkdown>
     </div>
   )

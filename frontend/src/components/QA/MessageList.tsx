@@ -37,7 +37,8 @@ export default function MessageList() {
           mode={m.mode}
           toolEvents={m.tool_events}
           codeRefs={m.code_refs}
-          budgetExhausted={m.budget_exhausted}
+          compactMarkers={m.compact_markers}
+          stopReason={m.stop_reason}
         />
       ))}
       {pending && (
@@ -47,7 +48,8 @@ export default function MessageList() {
           mode={pending.mode}
           toolEvents={pending.toolEvents}
           codeRefs={pending.codeRefs}
-          budgetExhausted={pending.budgetExhausted}
+          compactMarkers={pending.compactMarkers}
+          stopReason={pending.stopReason}
           streaming={streaming}
         />
       )}

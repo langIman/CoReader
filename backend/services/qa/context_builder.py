@@ -1,7 +1,11 @@
-"""QAContextBuilder：把检索结果 + 项目知识装配成 Context。
+"""QAContextBuilder：把检索结果 + 项目知识装配成 Context / Prompt。
 
-对应 QA_REFACTOR_PLAN.md §2.9。设计动机：让 qa_service 保持"只管流程"，
-Context 原语保持"只管消息历史"，业务装配集中在这里。
+设计动机：让 qa_service 保持"只管流程"，业务装配集中在这里。
+
+阶段 2 重构（QA_AGENT_LOOP_REFACTOR_PLAN.md）：
+- fast 模式仍走 ``build() -> Context``（一次性装配完整对话上下文 + stream_messages）
+- deep 模式改走 ``build_for_agent() -> (system_prompt, first_user)``，把工具循环
+  交给 Agent.run_stream() 自己跑——QA 不再持有 Context。
 """
 
 from __future__ import annotations
@@ -15,8 +19,9 @@ from backend.models.qa_models import QAMode
 from backend.services.agent.context.base import Context
 from backend.services.llm.prompts.qa_prompts import (
     QA_FAST_USER_TEMPLATE,
-    QA_SYSTEM_PROMPT_DEEP,
+    QA_SYSTEM_DYNAMIC_TEMPLATE,
     QA_SYSTEM_PROMPT_FAST,
+    QA_SYSTEM_STATIC,
 )
 from backend.services.qa.retrieval import retrieve_symbols_with_source
 
@@ -27,7 +32,9 @@ logger = logging.getLogger(__name__)
 K_SYMBOLS_FAST = 8           # 快速模式取的符号源码数
 K_FILE_SUMMARIES_FAST = 20   # 快速模式取的文件摘要数
 MAX_LINES_PER_SYMBOL = 80    # 单个符号源码截断行数
-MAX_ITER_DEEP = 8             # 深度模式工具循环上限（与 qa_service 共享）
+MAX_ITER_DEEP = 30            # 深度模式工具循环工程兜底（传给 Agent.max_iterations）
+# CC 是 while(true) 无硬上限，靠模型主动停止 + autocompact 收敛。
+# 我们保留一个大数作为极端情况下的最后防线，正常问答 3-8 轮即停。
 
 
 class QAContextBuilder:
@@ -37,9 +44,25 @@ class QAContextBuilder:
         self.mode = mode
 
     def build(self) -> Context:
-        if self.mode == "fast":
-            return self._build_fast()
-        return self._build_deep()
+        """fast 模式专用：装配完整 Context（system + user）供 stream_messages 消费。"""
+        if self.mode != "fast":
+            raise ValueError("build() 仅用于 fast 模式；deep 模式请用 build_for_agent()")
+        return self._build_fast()
+
+    def build_for_agent(self) -> tuple[str, str]:
+        """deep 模式专用：返回 ``(system_prompt, first_user_input)``。
+
+        Agent 接管工具循环——检索/调度/收敛全部由 Agent.run_stream() 完成，
+        QAContextBuilder 只负责装配 system_prompt。
+
+        system_prompt 拼装顺序：``STATIC + "\\n\\n" + DYNAMIC.format(...)``
+        STATIC 在前是为后续 prompt cache_control 预留位置（阶段 7 优化集）。
+        """
+        if self.mode != "deep":
+            raise ValueError("build_for_agent() 仅用于 deep 模式")
+        dynamic = QA_SYSTEM_DYNAMIC_TEMPLATE.format(project_name=self.project_name)
+        system_prompt = QA_SYSTEM_STATIC + "\n\n" + dynamic
+        return system_prompt, self.question
 
     # --------- 快速模式 ---------
 
@@ -71,18 +94,6 @@ class QAContextBuilder:
         )
         ctx.add_user(user_msg)
         return ctx
-
-    # --------- 深度模式 ---------
-
-    def _build_deep(self) -> Context:
-        """只给原问题，检索交给 Agent 工具循环。"""
-        ctx = Context(QA_SYSTEM_PROMPT_DEEP.format(
-            project_name=self.project_name,
-            max_iter=MAX_ITER_DEEP,
-        ))
-        ctx.add_user(self.question)
-        return ctx
-
 
 # ---------------------------- 渲染辅助 ----------------------------
 

@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import type {
+  CompactMarker,
   Conversation,
   QAMessage,
   QAMode,
+  StopReason,
   ToolEvent,
 } from '../types/qa'
 import type { CodeRef } from '../types/wiki'
@@ -14,11 +16,7 @@ import {
 } from '../services/qaApi'
 import { useWikiStore } from './useWikiStore'
 
-const MODE_STORAGE_KEY = 'coreviewer.qa.mode'
-const WIDTH_STORAGE_KEY = 'coreviewer.qa.widthRatio'
-const MIN_WIDTH = 0.25
-const MAX_WIDTH = 0.6
-const DEFAULT_WIDTH = 0.35
+const MODE_STORAGE_KEY = 'coreader.qa.mode'
 
 function loadMode(): QAMode {
   try {
@@ -29,28 +27,16 @@ function loadMode(): QAMode {
   }
 }
 
-function loadWidth(): number {
-  try {
-    const v = Number(localStorage.getItem(WIDTH_STORAGE_KEY))
-    if (Number.isFinite(v) && v >= MIN_WIDTH && v <= MAX_WIDTH) return v
-  } catch {
-    // ignore
-  }
-  return DEFAULT_WIDTH
-}
-
 interface PendingAssistant {
   content: string
   toolEvents: ToolEvent[]
   codeRefs: Record<string, CodeRef>
-  budgetExhausted: boolean
+  compactMarkers: CompactMarker[]
+  stopReason: StopReason | null
   mode: QAMode
 }
 
 interface QAStore {
-  open: boolean
-  widthRatio: number
-
   conversations: Conversation[]
   conversationsLoaded: boolean
   currentConversationId: string | null
@@ -64,9 +50,6 @@ interface QAStore {
 
   mode: QAMode
 
-  toggleOpen: () => void
-  setOpen: (open: boolean) => void
-  setWidthRatio: (r: number) => void
   setMode: (m: QAMode) => void
 
   loadConversations: (projectName: string) => Promise<void>
@@ -87,9 +70,6 @@ function nowIso() {
 }
 
 export const useQAStore = create<QAStore>((set, get) => ({
-  open: false,
-  widthRatio: loadWidth(),
-
   conversations: [],
   conversationsLoaded: false,
   currentConversationId: null,
@@ -102,19 +82,6 @@ export const useQAStore = create<QAStore>((set, get) => ({
   pendingAssistant: null,
 
   mode: loadMode(),
-
-  toggleOpen: () => set((s) => ({ open: !s.open })),
-  setOpen: (open) => set({ open }),
-
-  setWidthRatio: (r) => {
-    const clamped = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, r))
-    try {
-      localStorage.setItem(WIDTH_STORAGE_KEY, String(clamped))
-    } catch {
-      // ignore
-    }
-    set({ widthRatio: clamped })
-  },
 
   setMode: (m) => {
     try {
@@ -212,7 +179,8 @@ export const useQAStore = create<QAStore>((set, get) => ({
         content: '',
         toolEvents: [],
         codeRefs: {},
-        budgetExhausted: false,
+        compactMarkers: [],
+        stopReason: null,
         mode,
       },
     }))
@@ -291,17 +259,23 @@ export const useQAStore = create<QAStore>((set, get) => ({
             )
             break
           }
-          case 'budget_exhausted': {
-            set((s) =>
-              s.pendingAssistant
-                ? {
-                    pendingAssistant: {
-                      ...s.pendingAssistant,
-                      budgetExhausted: true,
-                    },
-                  }
-                : {},
-            )
+          case 'compact_boundary': {
+            set((s) => {
+              if (!s.pendingAssistant) return {}
+              const lastIter = s.pendingAssistant.toolEvents
+                .reduce((m, t) => (t.iteration > m ? t.iteration : m), 0)
+              const marker: CompactMarker = {
+                before_iteration: lastIter + 1,
+                summarized_turns: evt.data.summarized_turns,
+                new_input_tokens: evt.data.new_input_tokens,
+              }
+              return {
+                pendingAssistant: {
+                  ...s.pendingAssistant,
+                  compactMarkers: [...s.pendingAssistant.compactMarkers, marker],
+                },
+              }
+            })
             break
           }
           case 'code_refs': {
@@ -331,7 +305,8 @@ export const useQAStore = create<QAStore>((set, get) => ({
                 mode: pending.mode,
                 tool_events: pending.toolEvents,
                 code_refs: pending.codeRefs,
-                budget_exhausted: pending.budgetExhausted,
+                stop_reason: evt.data.stop_reason ?? null,
+                compact_markers: pending.compactMarkers,
                 created_at: nowIso(),
               }
               set((s) => ({
@@ -382,7 +357,6 @@ export const useQAStore = create<QAStore>((set, get) => ({
   reset: () => {
     get().cancelStream()
     set({
-      open: false,
       conversations: [],
       conversationsLoaded: false,
       currentConversationId: null,

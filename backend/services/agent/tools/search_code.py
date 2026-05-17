@@ -1,19 +1,19 @@
-"""Agent Tool：正则/关键词搜索源码。
-
-对应 QA_REFACTOR_PLAN.md §2.8。纯 Python 实现，遍历 file_store 中的项目文件，
-行级匹配，返回 [{file, line, snippet}]。snippet 含匹配行 + 前后各 1 行上下文。
-"""
+"""Agent Tool：正则/关键词搜索源码。"""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from backend.dao.file_store import get_project_files
+from backend.dao.project_file_persist import load_project_files
 from backend.services.agent.tools.base import BaseTool
 
 
 class SearchCodeTool(BaseTool):
+
+    def __init__(self, project_name: str = "") -> None:
+        self._project_name = project_name
+
     @property
     def name(self) -> str:
         return "search_code"
@@ -58,13 +58,12 @@ class SearchCodeTool(BaseTool):
         max_results: int = 20,
         **kwargs: Any,
     ) -> Any:
-        project_files = get_project_files()
+        project_files = load_project_files(self._project_name)
         if not project_files:
             return {"error": "没有已加载的项目"}
 
         max_results = max(1, min(max_results, 50))
 
-        matcher: callable
         if is_regex:
             try:
                 rx = re.compile(pattern)
@@ -82,13 +81,14 @@ class SearchCodeTool(BaseTool):
             for i, line in enumerate(lines):
                 if not matcher(line):
                     continue
-                snippet_start = max(0, i - 1)
-                snippet_end = min(len(lines), i + 2)
+                snippet_start = max(0, i - 3)       # ±3 行上下文（原为 ±1）
+                snippet_end = min(len(lines), i + 4)
                 snippet = "\n".join(lines[snippet_start:snippet_end])
                 results.append({
                     "file": path,
-                    "line": i + 1,  # 1-indexed
+                    "line": i + 1,           # 1-indexed
                     "snippet": snippet,
+                    "start_line": snippet_start + 1,  # 便于 LLM 直接传给 get_file_content
                 })
                 if len(results) >= max_results:
                     return {

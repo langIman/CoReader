@@ -11,7 +11,7 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType>(null!)
 
 function getInitialTheme(): Theme {
-  const saved = localStorage.getItem('coreviewer-theme')
+  const saved = localStorage.getItem('coreader-theme')
   if (saved === 'light' || saved === 'dark') return saved
   return 'light'
 }
@@ -26,7 +26,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light'
-      localStorage.setItem('coreviewer-theme', next)
+      localStorage.setItem('coreader-theme', next)
       return next
     })
   }, [])

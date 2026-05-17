@@ -85,7 +85,7 @@ def get_conversation(conversation_id: str) -> ConversationDetail | None:
 
         msg_rows = conn.execute(
             "SELECT id, conversation_id, role, content, mode, "
-            "tool_events_json, code_refs_json, created_at "
+            "tool_events_json, code_refs_json, stop_reason, tool_chain_json, created_at "
             "FROM qa_messages WHERE conversation_id = ? ORDER BY id ASC",
             (conversation_id,),
         ).fetchall()
@@ -145,8 +145,9 @@ def append_message(conversation_id: str, message: QAMessage) -> int:
     try:
         cur = conn.execute(
             "INSERT INTO qa_messages "
-            "(conversation_id, role, content, mode, tool_events_json, code_refs_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(conversation_id, role, content, mode, tool_events_json, code_refs_json, "
+            "stop_reason, tool_chain_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 conversation_id,
                 message.role,
@@ -154,6 +155,8 @@ def append_message(conversation_id: str, message: QAMessage) -> int:
                 message.mode,
                 json.dumps(message.tool_events, ensure_ascii=False),
                 json.dumps(message.code_refs, ensure_ascii=False),
+                message.stop_reason,
+                json.dumps(message.tool_chain, ensure_ascii=False) if message.tool_chain else None,
                 message.created_at,
             ),
         )
@@ -163,10 +166,35 @@ def append_message(conversation_id: str, message: QAMessage) -> int:
         conn.close()
 
 
+# ---------------------------- 跨功能查询 ----------------------------
+
+
+def get_user_questions(project_name: str) -> list[str]:
+    """聚合某项目下所有会话里的 user 角色消息内容，按时间正序。
+
+    Quiz 的 history 模式调用此函数收集"用户曾问过什么"作为出题素材。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT m.content FROM qa_messages m "
+            "JOIN qa_conversations c ON m.conversation_id = c.id "
+            "WHERE c.project_name = ? AND m.role = 'user' "
+            "ORDER BY m.id ASC",
+            (project_name,),
+        ).fetchall()
+        return [r["content"] for r in rows]
+    finally:
+        conn.close()
+
+
 # ---------------------------- 内部 ----------------------------
 
 
 def _row_to_message(row) -> QAMessage:
+    keys = row.keys() if hasattr(row, "keys") else []
+    stop_reason = row["stop_reason"] if "stop_reason" in keys else None
+    tool_chain_raw = row["tool_chain_json"] if "tool_chain_json" in keys else None
     return QAMessage(
         id=row["id"],
         conversation_id=row["conversation_id"],
@@ -175,5 +203,7 @@ def _row_to_message(row) -> QAMessage:
         mode=row["mode"],
         tool_events=json.loads(row["tool_events_json"]) if row["tool_events_json"] else [],
         code_refs=json.loads(row["code_refs_json"]) if row["code_refs_json"] else {},
+        stop_reason=stop_reason,
+        tool_chain=json.loads(tool_chain_raw) if tool_chain_raw else [],
         created_at=row["created_at"],
     )

@@ -1,7 +1,10 @@
 """QA 问答模式的 Prompt 模板。
 
-对应 QA_REFACTOR_PLAN.md §2.6：两套 system prompt（fast / deep）共用一段
-输出格式约定；fast 的 user 模板由 QAContextBuilder 填充。
+两套 system prompt：
+- fast：单次 LLM 调用 + 静态上下文，prompt 一次性拼好
+- deep：拆 STATIC（项目无关，可缓存）+ DYNAMIC（项目相关，每次填入）
+
+QA_FAST_USER_TEMPLATE 给 fast 的 user 模板，由 QAContextBuilder 填充。
 """
 
 from __future__ import annotations
@@ -61,9 +64,21 @@ QA_FAST_USER_TEMPLATE = """\
 
 
 # --------- 深度模式 ---------
+#
+# 设计原则（向 Claude Code 对齐）：
+# - 不告知 LLM 工具调用上限——上限是工程兜底（Agent.max_iterations），不是语义约束
+# - 不预设"≤ N 轮"软建议——信任模型自然收敛
+# - System prompt 拆 STATIC（项目无关，可缓存）+ DYNAMIC（项目相关，每次填入）
+#   STATIC 在前 / DYNAMIC 在后——为后续 prompt cache_control 预留位置
+#   （阶段 7 优化集会让 STATIC 段挂 ephemeral cache）
+# - 只描述工具能力 + 回答风格，让模型自主决定调几轮、调什么
 
-QA_SYSTEM_PROMPT_DEEP = """\
-你是 {project_name} 项目的知识库问答助手。可调用的工具：
+
+# STATIC 段在 deep 模式中直接 + 拼接进 system_prompt（不 format），所以
+# COMMON_OUTPUT_RULES 内的 `{{}}` format 转义需要预先消化掉一次。
+# fast 模式不受影响——它用 QA_SYSTEM_PROMPT_FAST，整体仍走 .format(project_name=...)。
+QA_SYSTEM_STATIC = ("""\
+你是项目知识库问答助手。可调用的工具：
 - search_symbols(query): 按关键词语义搜函数/类
 - search_code(pattern): 正则/关键词搜源码（字面量、错误信息）
 - get_modules(): 模块划分
@@ -72,12 +87,7 @@ QA_SYSTEM_PROMPT_DEEP = """\
 - get_call_edges(symbol_name): 调用关系
 - get_file_content(path): 读整个文件源码
 
-# 核心原则：节制地用工具
-1. **一次 ≤ 3 轮工具调用**就应足够回答大多数问题。超过 3 轮意味着你在原地打转
-2. **不要**对同一文件/符号重复调用 get_file_content 或 get_symbols —— 已经读过的信息留在上下文里可直接引用
-3. **不要**在给出最终回答前再调 search_* 做"兜底确认"
-4. 拿到足够信息就立刻总结回答，不要执着于"全面性"
-5. 上限 {max_iter} 轮，到达即强制收尾
+如果你打算同时调多个相互独立的工具（比如一次性查多个符号或多个文件），就在一轮里一起返回这些 tool_calls；只有当后一个调用依赖前一个的结果时才分轮调。
 
 # 回答风格
 - 开门见山直接答问题，不要写"让我看看..."之类的思考独白
@@ -85,4 +95,29 @@ QA_SYSTEM_PROMPT_DEEP = """\
 - 简洁：多数问题 200~500 字足够；只在用户明确问"详细"时铺开
 - 涉及代码实现时引用具体文件+行号，不凭记忆复述
 
-""" + COMMON_OUTPUT_RULES
+""" + COMMON_OUTPUT_RULES).format()
+
+
+QA_SYSTEM_DYNAMIC_TEMPLATE = """\
+# 当前项目
+你正在协助分析 `{project_name}` 项目。"""
+
+
+# --------- Compactor 摘要 prompt（阶段 4） ---------
+#
+# 简陋版即可——质量调优是 §7 优化议题。Agent 在撞 token 预算时调一次轻量 LLM
+# 把旧消息序列摘要成一段文本，再用 Context.compact() 替换历史。
+
+COMPACT_SUMMARY_PROMPT = """\
+你的任务：把对话历史压缩成一段简洁要点，让后续 Agent 不读原文也能继续推进。
+
+要求：
+1. 列出已查询过的关键事实（文件路径、符号名、调用关系等）
+2. 列出已尝试但失败 / 无果的路径，避免重复尝试
+3. 标注用户原始问题的核心意图与已部分获得的结论
+4. 不超过 800 字
+5. 不要复述工具结果原文，只提炼可复用结论
+6. 用 Markdown 列表 / 小标题组织
+
+直接输出摘要正文，不要客套话、不要说明你在做什么。"""
+

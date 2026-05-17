@@ -33,7 +33,7 @@ async def generate_module_split() -> dict:
         raise ValueError("No summaries found. Please generate summaries first.")
 
     # 用 Skill 驱动 Agent（Agent 自主收集数据、自主验证覆盖率）
-    skill = ModuleSplitSkill()
+    skill = ModuleSplitSkill(project_name)
     agent = Agent(system_prompt=skill.system_prompt, tools=skill.tools)
     user_input = skill.build_user_input({"project_name": project_name})
     raw = await agent.run(user_input)

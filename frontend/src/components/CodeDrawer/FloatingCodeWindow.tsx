@@ -6,9 +6,9 @@ import FileTree from './FileTree'
 type Geom = { top: number; left: number; width: number; height: number }
 type ResizeEdge = 'e' | 's' | 'se' | 'n' | 'w' | 'ne' | 'sw' | 'nw'
 
-const STORAGE_KEY = 'coreviewer.codeWindow.geom'
-const TREE_KEY = 'coreviewer.codeWindow.treeOpen'
-const TREE_WIDTH_KEY = 'coreviewer.codeWindow.treeWidth'
+const STORAGE_KEY = 'coreader.codeWindow.geom'
+const TREE_KEY = 'coreader.codeWindow.treeOpen'
+const TREE_WIDTH_KEY = 'coreader.codeWindow.treeWidth'
 const MIN_W = 400
 const MIN_H = 240
 const MIN_TREE_W = 140

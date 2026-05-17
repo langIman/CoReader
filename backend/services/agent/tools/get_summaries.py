@@ -2,13 +2,15 @@
 
 from typing import Any
 
-from backend.dao.file_store import get_project_name
 from backend.dao.summary_store import get_summaries_by_type
 from backend.services.agent.tools.base import BaseTool
 
 
 class GetSummariesTool(BaseTool):
     """从 SQLite 获取指定类型的项目摘要。"""
+
+    def __init__(self, project_name: str) -> None:
+        self._project_name = project_name
 
     @property
     def name(self) -> str:
@@ -36,7 +38,4 @@ class GetSummariesTool(BaseTool):
         }
 
     async def execute(self, *, summary_type: str, **kwargs: Any) -> Any:
-        project_name = get_project_name()
-        if not project_name:
-            return {"error": "没有已加载的项目"}
-        return get_summaries_by_type(project_name, summary_type)
+        return get_summaries_by_type(self._project_name, summary_type)

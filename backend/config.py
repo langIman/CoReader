@@ -16,6 +16,8 @@ def _parse_optional_bool(name: str) -> bool | None:
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.6-plus")
+# 摘要类"短而快"的任务用 fast 模型；空则回落到 QWEN_MODEL（即与默认一致，等价禁用分层）
+QWEN_FAST_MODEL = os.getenv("QWEN_FAST_MODEL", "MiniMax-M2.7") or QWEN_MODEL
 QWEN_ENABLE_THINKING = _parse_optional_bool("QWEN_ENABLE_THINKING")
 
 MAX_FILE_SIZE = 1024 * 1024  # 1MB
@@ -54,11 +56,13 @@ MAX_PROJECT_SIZE = 10 * 1024 * 1024  # 10MB total
 MAX_PROJECT_FILES = 200
 
 # 摘要生成配置
-SUMMARY_FUNC_LINES = 5          # 每个函数/类提取的行数
+SUMMARY_FUNC_LINES = 7          # 每个函数/类提取的行数
 SUMMARY_TRUNCATION_PERCENT = 0.3  # 文件截断上限（30%）
 
 # Wiki 模块页源码预算（字符数）；中英混合代码 ≈ 3 字符/token，90000 ≈ 30k tokens
 MODULE_CODE_BUDGET_CHARS = 90000
 
 # Agent 系统配置（从 services/agents/config.py 迁移）
-MAX_WORKER_CONCURRENCY = 5          # Worker 最大并发数
+MAX_WORKER_CONCURRENCY = 5           # Worker 最大并发数（摘要/wiki 页生成）。
+# 注：sub2api 网关账号池容量有限，10 并发会触发 429 "All available accounts exhausted"。
+# 5 是实测下安全值，超过需先验证当前套餐池容量。

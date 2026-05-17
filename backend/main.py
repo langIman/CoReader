@@ -18,13 +18,14 @@ from fastapi.responses import JSONResponse
 from backend.controllers import (
     file_controller,
     qa_controller,
+    quiz_controller,
     wiki_controller,
 )
 from backend.dao.database import init_db
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="CoReviewer", version="0.1.0")
+app = FastAPI(title="CoReader", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +48,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(file_controller.router)
 app.include_router(wiki_controller.router)
 app.include_router(qa_controller.router)
+app.include_router(quiz_controller.router)
 
 init_db()
 

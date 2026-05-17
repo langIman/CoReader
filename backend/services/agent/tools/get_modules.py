@@ -3,12 +3,14 @@
 from typing import Any
 
 from backend.dao.database import get_connection
-from backend.dao.file_store import get_project_name
 from backend.services.agent.tools.base import BaseTool
 
 
 class GetModulesTool(BaseTool):
     """从 SQLite 查询项目中的模块信息及 import 依赖。"""
+
+    def __init__(self, project_name: str) -> None:
+        self._project_name = project_name
 
     @property
     def name(self) -> str:
@@ -36,17 +38,13 @@ class GetModulesTool(BaseTool):
         }
 
     async def execute(self, *, path: str | None = None, **kwargs: Any) -> Any:
-        project_name = get_project_name()
-        if not project_name:
-            return {"error": "没有已加载的项目"}
-
         conn = get_connection()
         try:
             query = (
                 "SELECT path, line_count, symbol_count, imports "
                 "FROM modules WHERE project_name = ?"
             )
-            params: list[Any] = [project_name]
+            params: list[Any] = [self._project_name]
 
             if path:
                 query += " AND path = ?"

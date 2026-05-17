@@ -1,0 +1,32 @@
+[
+  {
+    "question": "项目的主启动类是哪个？",
+    "expected_keywords": ["HmDianPingApplication"],
+    "expected_code_refs": ["main/java/com/hmdp/HmDianPingApplication.java"],
+    "mode": "deep"
+  },
+  {
+    "question": "Redis 分布式锁是怎么实现的？用了什么工具？",
+    "expected_keywords": ["Redisson", "lock"],
+    "expected_code_refs": ["main/java/com/hmdp/config/RedissonConfig.java"],
+    "mode": "deep"
+  },
+  {
+    "question": "用户登录的验证流程是怎样的？拦截器在哪里配置？",
+    "expected_keywords": ["interceptor", "MvcConfig"],
+    "expected_code_refs": ["main/java/com/hmdp/config/MvcConfig.java"],
+    "mode": "deep"
+  },
+  {
+    "question": "秒杀优惠券的下单逻辑在哪个类里？",
+    "expected_keywords": ["VoucherOrder"],
+    "expected_code_refs": ["main/java/com/hmdp/service/impl/VoucherOrderServiceImpl.java"],
+    "mode": "deep"
+  },
+  {
+    "question": "店铺信息的缓存策略是什么？用了哪些缓存模式？",
+    "expected_keywords": ["cache", "Shop"],
+    "expected_code_refs": ["main/java/com/hmdp/service/impl/ShopServiceImpl.java"],
+    "mode": "fast"
+  }
+]

@@ -1,20 +1,19 @@
 """QA 问答编排服务。
 
-对应 QA_REFACTOR_PLAN.md §2.11 / §2.12：
-- ``answer(req)``：公共 async generator，yield ``(event_name, payload)``
-  流；controller 负责把元组序列化成 SSE 帧
-- ``_fast_stream`` / ``_deep_stream``：两种模式的内部 async generator，
-  各自用 ``__final__`` 哨兵把最终 content / tool_events 回传给 ``answer``
+公共入口 ``answer(req)``：async generator，yield ``(event_name, payload)``；
+controller 把这些序列化成 SSE 帧。内部哨兵 ``__final__`` 不转发，仅用来收
+``content / tool_events / stop_reason``。
 
-深度模式两道安全阀（§2.11）：
-1. ``MAX_ITER_DEEP``：工具调用轮数上限
-2. ``DEEP_TOKEN_BUDGET``：输入 token 预算；超阈值后关闭 tools 强制收敛
+阶段 2 重构（QA_AGENT_LOOP_REFACTOR_PLAN.md）：
+- ``_deep_stream`` 已删除；deep 模式改成消费 ``Agent.run_stream()``
+- ``_fast_stream`` 不变（fast 是单次 LLM 流式调用，不需要 Agent 主循环）
+- ``DEEP_TOKEN_BUDGET`` / ``budget_exhausted`` 路径已移除（向 CC 看齐：靠
+  Agent.max_iterations 兜底，长会话压缩在阶段 4 由 Compactor 接管）
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -23,9 +22,12 @@ from typing import Any
 from backend.dao.qa_store import (
     append_message,
     create_conversation,
+    get_conversation,
     touch_conversation,
 )
 from backend.models.qa_models import QAMessage, QARequest
+from backend.services.agent.agent import Agent
+from backend.services.agent.compactor import LLMCompactor
 from backend.services.agent.tools.get_call_edges import GetCallEdgesTool
 from backend.services.agent.tools.get_file_content import GetFileContentTool
 from backend.services.agent.tools.get_modules import GetModulesTool
@@ -33,17 +35,18 @@ from backend.services.agent.tools.get_summaries import GetSummariesTool
 from backend.services.agent.tools.get_symbols import GetSymbolsTool
 from backend.services.agent.tools.search_code import SearchCodeTool
 from backend.services.agent.tools.search_symbols import SearchSymbolsTool
-from backend.services.llm.llm_service import call_llm, stream_messages
+from backend.services.llm.llm_service import stream_messages
 from backend.services.qa.code_refs import parse_code_refs
 from backend.services.qa.context_builder import MAX_ITER_DEEP, QAContextBuilder
 
 logger = logging.getLogger(__name__)
 
-# 深度模式：输入 token 预算。超了就把下一轮 tools 设 None 强制收敛
-DEEP_TOKEN_BUDGET = 20_000
-# 伪流式分片参数（§2.11）
+# 伪流式分片参数（用于把 Agent 一次性吐出的 final_text 切片成 token 流）
 PSEUDO_STREAM_CHUNK_SIZE = 20
 PSEUDO_STREAM_DELAY = 0.02
+
+# autocompact 触发阈值：撞此 token 数后摘要旧消息（替换原 budget_exhausted 关 tools）
+DEEP_TOKEN_BUDGET = 20_000
 
 
 def _now_iso() -> str:
@@ -79,9 +82,11 @@ async def answer(req: QARequest) -> AsyncGenerator[tuple[str, dict[str, Any]], N
         "mode": req.mode,
     })
 
-    # 4. 委派流式事件；同时收集最终 content / tool_events
+    # 4. 委派流式事件；同时收集最终 content / tool_events / stop_reason
     collected: list[str] = []
     tool_events: list[dict] = []
+    stop_reason: str = "completed"
+    tool_chain: list[dict] = []
 
     inner = _fast_stream(req) if req.mode == "fast" else _deep_stream(req)
     try:
@@ -90,6 +95,8 @@ async def answer(req: QARequest) -> AsyncGenerator[tuple[str, dict[str, Any]], N
             if name == "__final__":
                 collected.append(payload.get("content", ""))
                 tool_events = payload.get("tool_events", [])
+                stop_reason = payload.get("stop_reason", "completed")
+                tool_chain = payload.get("tool_chain", [])
                 continue
             yield event
     except Exception as e:
@@ -109,6 +116,8 @@ async def answer(req: QARequest) -> AsyncGenerator[tuple[str, dict[str, Any]], N
         mode=req.mode,
         tool_events=tool_events,
         code_refs=code_refs,
+        stop_reason=stop_reason,
+        tool_chain=tool_chain,
         created_at=_now_iso(),
     ))
     touch_conversation(conv_id)
@@ -119,6 +128,7 @@ async def answer(req: QARequest) -> AsyncGenerator[tuple[str, dict[str, Any]], N
     yield ("done", {
         "assistant_message_id": assistant_msg_id,
         "content": clean_content,
+        "stop_reason": stop_reason,
     })
 
 
@@ -140,25 +150,6 @@ async def _fast_stream(
 # ---------------------------- 深度模式 ----------------------------
 
 
-def _estimate_tokens(messages: list[dict]) -> int:
-    """粗估输入 token 数：字符数 / 3（中英混合偏保守）。
-
-    换精确 tokenizer 需要额外依赖；MVP 用字符数够了。
-    """
-    total = 0
-    for m in messages:
-        total += len(json.dumps(m, ensure_ascii=False, default=str))
-    return total // 3
-
-
-def _truncate(obj: Any, limit: int) -> str:
-    """把对象序列化后截断，用于 SSE 推送到前端的 preview。"""
-    s = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, default=str)
-    if len(s) <= limit:
-        return s
-    return s[:limit] + f"... ({len(s) - limit} more chars)"
-
-
 async def _pseudo_stream(
     content: str,
     chunk_size: int = PSEUDO_STREAM_CHUNK_SIZE,
@@ -170,123 +161,143 @@ async def _pseudo_stream(
         await asyncio.sleep(delay)
 
 
-def _build_deep_tools() -> list:
-    """深度模式工具集（§2.11）。"""
+def _inject_history(agent: Agent, conversation_id: str) -> None:
+    """从 DB 加载会话历史，转换后委托 agent.inject_history 注入 Context。
+
+    职责：从 DB 读数据、配对 user+assistant 消息、构造 turns 结构。
+    上下文恢复逻辑（restore_turn）已下沉到 Context 层，此处不再包含任何
+    Context 操作——完全解耦（QA 层只管"加载什么"，Context 层管"怎么恢复"）。
+    """
+    detail = get_conversation(conversation_id)
+    if not detail or len(detail.messages) <= 1:
+        return
+
+    # messages 按 id ASC，去掉最后一条（当前轮的 user，由 run_stream 自己 add_user）
+    history = detail.messages[:-1]
+
+    # 把消息配对：每个 user 对应后面一条 assistant
+    turns: list[tuple[str, list[dict], str]] = []
+    i = 0
+    while i < len(history):
+        msg = history[i]
+        if msg.role == "user":
+            user_content = msg.content
+            tool_chain: list[dict] = []
+            fallback_assistant = ""
+            if i + 1 < len(history) and history[i + 1].role == "assistant":
+                asst = history[i + 1]
+                tool_chain = asst.tool_chain or []
+                fallback_assistant = asst.content if not tool_chain else ""
+                i += 2
+            else:
+                i += 1
+            turns.append((user_content, tool_chain, fallback_assistant))
+        else:
+            i += 1  # 跳过孤立的 assistant（理论上不会发生）
+
+    agent.inject_history(turns)
+    logger.info(
+        "QA deep: injected %d turns from conv=%s into Agent Context",
+        len(turns), conversation_id,
+    )
+
+
+def _build_deep_tools(project_name: str) -> list:
+    """深度模式工具集（QA 自有的检索 / 分析 7 件套）。
+
+    SQLite 查询工具在构造时注入 project_name，避免依赖进程内存全局变量
+    （内存在服务重启后清零会导致 "没有已加载的项目" 错误）。
+    SearchCodeTool / GetFileContentTool 依赖内存文件内容，暂保持原样。
+    """
     return [
-        GetSummariesTool(),
-        GetModulesTool(),
-        GetSymbolsTool(),
-        GetCallEdgesTool(),
-        GetFileContentTool(),
-        SearchSymbolsTool(),
-        SearchCodeTool(),
+        GetSummariesTool(project_name),
+        GetModulesTool(project_name),
+        GetSymbolsTool(project_name),
+        GetCallEdgesTool(project_name),
+        GetFileContentTool(project_name),
+        SearchSymbolsTool(project_name),
+        SearchCodeTool(project_name),
     ]
 
 
 async def _deep_stream(
     req: QARequest,
 ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
-    """深度模式工具循环（不改 agent.py，这里手写一份）。
+    """深度模式：消费 ``Agent.run_stream()`` 事件流 + 翻译为 SSE 帧。
 
-    每轮：
-    1. 估算输入 tokens，超预算 → 本轮起关闭工具
-    2. call_llm(messages, tools=?)
-    3. 若返回 tool_calls → 依次执行，追加 tool_result，下一轮
-    4. 若返回纯文本 → 伪流式分片产出 → 退出
-    5. 达迭代上限 → 给出兜底回答
+    主循环已搬到 [agent.py](../agent/agent.py)。本函数只做：
+    1. 装配 system_prompt + first_user
+    2. 实例化 Agent（关闭 SpawnAgentTool 自动注入，QA 不需要子 agent）
+    3. 翻译 AgentEvent → SSE 帧
+    4. Stop 时把 final_text 切片伪流式吐 token，再 yield ``__final__``
     """
-    ctx = QAContextBuilder(req.project_name, req.question, "deep").build()
+    builder = QAContextBuilder(req.project_name, req.question, "deep")
+    system_prompt, first_user = builder.build_for_agent()
 
-    tools = _build_deep_tools()
-    tool_map = {t.name: t for t in tools}
-    tool_defs = [t.definition for t in tools]
+    agent = Agent(
+        system_prompt=system_prompt,
+        tools=_build_deep_tools(req.project_name),
+        max_iterations=MAX_ITER_DEEP,
+        auto_spawn_agent=False,
+        token_budget=DEEP_TOKEN_BUDGET,
+        compactor=LLMCompactor(),
+    )
+
+    # 注入会话历史：每次 ask 新建 Agent，历史必须从 DB 读回来喂给 LLM
+    # 排除最新一条（当前轮的 user 消息），它作为 first_user 传给 run_stream
+    if req.conversation_id:
+        _inject_history(agent, req.conversation_id)
+
     tool_events: list[dict] = []
+    pending_args: dict[str, dict] = {}  # tool_id -> args，用于 ToolUseStart/Result 配对
 
-    for iteration in range(1, MAX_ITER_DEEP + 1):
-        messages = ctx.to_messages()
-
-        # —— 安全阀 2：token 预算用尽，强制关闭工具 ——
-        tokens_est = _estimate_tokens(messages)
-        over_budget = tokens_est > DEEP_TOKEN_BUDGET
-        current_tools = None if over_budget else tool_defs
-        if over_budget:
-            yield ("budget_exhausted", {
-                "tokens_est": tokens_est,
-                "budget": DEEP_TOKEN_BUDGET,
+    async for ev in agent.run_stream(first_user):
+        if ev.type == "tool_use_start":
+            pending_args[ev.tool_id] = ev.args
+            yield ("tool_call", {
+                "iteration": ev.iteration,
+                "name": ev.name,
+                "args_preview": ev.args,
             })
 
-        msg = await call_llm(messages, tools=current_tools)
-        ctx.add_assistant(msg)
+        elif ev.type == "tool_result":
+            args = pending_args.pop(ev.tool_id, {})
+            yield ("tool_result", {
+                "iteration": ev.iteration,
+                "name": ev.name,
+                "ok": ev.ok,
+                "preview": ev.preview,
+            })
+            tool_events.append({
+                "iteration": ev.iteration,
+                "name": ev.name,
+                "args": args,
+                "result_preview": ev.preview,
+            })
 
-        tool_calls = msg.get("tool_calls")
-        if not tool_calls:
-            # LLM 给出最终答复 → 先去 code_refs 块，再伪流式出净化后的内容
-            # 否则那块裸 JSON 会流给前端显示在 bubble 里
-            raw_content = msg.get("content") or ""
+        elif ev.type == "iteration_end":
+            # 阶段 6 才在前端渲染轮次分隔；当前不发
+            continue
+
+        elif ev.type == "compact_boundary":
+            yield ("compact_boundary", {
+                "summarized_turns": ev.summarized_turns,
+                "new_input_tokens": ev.new_input_tokens,
+            })
+
+        elif ev.type == "stop":
+            # 切片伪流式吐 token（先剥掉 code_refs 块以免裸 JSON 流给前端）
+            raw_content = ev.final_text
             clean_content, _ = parse_code_refs(raw_content)
             async for chunk in _pseudo_stream(clean_content):
                 yield ("token", {"delta": chunk})
-            # __final__ 仍传原始 content，让 answer() 统一走 parse_code_refs + 落库
-            yield ("__final__", {"content": raw_content, "tool_events": tool_events})
+            # 收集完整工具链（_messages[1:] = 去掉首条 user 消息后的全部链路）
+            # 下轮注入时 LLM 能看到本轮调了哪些工具、工具返回了什么原始数据（CC 对齐）
+            tool_chain = agent._context._messages[1:]
+            yield ("__final__", {
+                "content": raw_content,
+                "tool_events": tool_events,
+                "stop_reason": ev.reason,
+                "tool_chain": tool_chain,
+            })
             return
-
-        # 预算用尽时忽略本轮 tool_calls（罕见但防御）；下一轮 tools=None 强制收敛
-        if over_budget:
-            logger.warning(
-                "Deep QA: ignoring %d tool_calls after budget exhaustion",
-                len(tool_calls),
-            )
-            continue
-
-        # —— 执行工具 ——
-        for tc in tool_calls:
-            func = tc.get("function", {})
-            name = func.get("name", "")
-            raw_args = func.get("arguments", "{}")
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-            except json.JSONDecodeError:
-                args = {}
-
-            yield ("tool_call", {
-                "iteration": iteration,
-                "name": name,
-                "args_preview": args,
-            })
-
-            tool = tool_map.get(name)
-            if tool is None:
-                result: Any = {"error": f"未知工具: {name}"}
-            else:
-                try:
-                    result = await tool.execute(**args)
-                except Exception as e:
-                    logger.exception("Deep QA tool failed: %s", name)
-                    result = {"error": f"{type(e).__name__}: {e}"}
-
-            result_str = json.dumps(result, ensure_ascii=False, default=str)
-            tool_call_id = tc.get("id", "")
-            ctx.add_tool_result(
-                tool_call_id=tool_call_id, name=name, content=result_str,
-            )
-
-            ok = not (isinstance(result, dict) and "error" in result)
-            preview = _truncate(result_str, 500)
-            yield ("tool_result", {
-                "iteration": iteration,
-                "name": name,
-                "ok": ok,
-                "preview": preview,
-            })
-            tool_events.append({
-                "iteration": iteration,
-                "name": name,
-                "args": args,
-                "result_preview": preview,
-            })
-
-    # —— 安全阀 1：迭代上限 ——
-    fallback = "[达到工具调用上限，回答可能不完整]"
-    async for chunk in _pseudo_stream(fallback):
-        yield ("token", {"delta": chunk})
-    yield ("__final__", {"content": fallback, "tool_events": tool_events})

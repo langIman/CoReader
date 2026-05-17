@@ -1,6 +1,6 @@
-# CoReviewer Wiki 化改造计划
+# CoReader Wiki 化改造计划
 
-> 将 CoReviewer 从"代码审查工具"转型为"读懂项目的知识库 + 问答平台"（类 DeepWiki）。
+> 将 CoReader 从"代码审查工具"转型为"读懂项目的知识库 + 问答平台"（类 DeepWiki）。
 
 ## 一、项目新定位
 

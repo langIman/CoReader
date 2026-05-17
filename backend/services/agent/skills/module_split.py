@@ -75,6 +75,9 @@ SYSTEM_PROMPT = """\
 class ModuleSplitSkill:
     """将项目按业务职责拆分为功能模块的 Skill。"""
 
+    def __init__(self, project_name: str) -> None:
+        self._project_name = project_name
+
     @property
     def name(self) -> str:
         return "module_split"
@@ -90,13 +93,12 @@ class ModuleSplitSkill:
     @property
     def tools(self) -> list[Tool]:
         return [
-            GetSummariesTool(),
-            GetModulesTool(),
-            GetCallEdgesTool(),
-            GetSymbolsTool(),
-            GetFileContentTool(),
+            GetSummariesTool(self._project_name),
+            GetModulesTool(self._project_name),
+            GetCallEdgesTool(self._project_name),
+            GetSymbolsTool(self._project_name),
+            GetFileContentTool(self._project_name),
         ]
 
     def build_user_input(self, context: dict[str, Any]) -> str:
-        project_name = context.get("project_name", "unknown")
-        return f"请分析项目「{project_name}」并将其拆分为功能模块。"
+        return f"请分析项目「{self._project_name}」并将其拆分为功能模块。"

@@ -1,13 +1,18 @@
 import { create } from 'zustand'
 import type { CodeRef, WikiDocument, WikiPage, WikiProgressEvent, WikiTaskStatus } from '../types/wiki'
 import { getPersistedProject, getWikiDocument } from '../services/api'
+import { useLayoutStore } from './useLayoutStore'
 
 interface CodeDrawerState {
   open: boolean
   ref: CodeRef | null
 }
 
-const PROJECT_NAME_STORAGE_KEY = 'coreviewer.wiki.projectName'
+const PROJECT_NAME_STORAGE_KEY = 'coreader.wiki.projectName'
+const NAV_WIDTH_STORAGE_KEY = 'coreader.wiki.navWidthPx'
+const NAV_WIDTH_MIN = 180
+const NAV_WIDTH_MAX = 480
+const NAV_WIDTH_DEFAULT = 256
 
 function persistProjectName(name: string | null) {
   try {
@@ -24,6 +29,16 @@ function loadPersistedProjectName(): string | null {
   } catch {
     return null
   }
+}
+
+function loadNavWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(NAV_WIDTH_STORAGE_KEY))
+    if (Number.isFinite(v) && v >= NAV_WIDTH_MIN && v <= NAV_WIDTH_MAX) return v
+  } catch {
+    // ignore
+  }
+  return NAV_WIDTH_DEFAULT
 }
 
 interface WikiStore {
@@ -43,6 +58,7 @@ interface WikiStore {
 
   codeDrawer: CodeDrawerState
   drawerHeightRatio: number
+  navWidthPx: number
 
   setProject: (name: string, files: Record<string, string>) => void
   setGenerateTaskId: (id: string | null) => void
@@ -58,6 +74,7 @@ interface WikiStore {
   openCodeDrawerWithRef: (ref: CodeRef) => void
   closeCodeDrawer: () => void
   setDrawerHeightRatio: (r: number) => void
+  setNavWidthPx: (px: number) => void
   reset: () => void
 }
 
@@ -78,6 +95,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
 
   codeDrawer: { open: false, ref: null },
   drawerHeightRatio: 0.4,
+  navWidthPx: loadNavWidth(),
 
   setProject: (name, files) => {
     persistProjectName(name)
@@ -134,6 +152,9 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
     if (!page) return
     // 分类节点不可导航
     if (page.type === 'category') return
+    // 委托给 layout store：在 active leaf 中打开/激活对应 wiki tab
+    useLayoutStore.getState().openWikiPage(pageId)
+    // 同步 currentPageId（NavTree 高亮 / openCodeDrawer / Quiz 上下文等仍依赖此值）
     set({ currentPageId: pageId, codeDrawer: { open: false, ref: null } })
   },
 
@@ -153,6 +174,16 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
 
   setDrawerHeightRatio: (r) =>
     set({ drawerHeightRatio: Math.max(0.2, Math.min(0.75, r)) }),
+
+  setNavWidthPx: (px) => {
+    const clamped = Math.max(NAV_WIDTH_MIN, Math.min(NAV_WIDTH_MAX, px))
+    try {
+      localStorage.setItem(NAV_WIDTH_STORAGE_KEY, String(clamped))
+    } catch {
+      // ignore
+    }
+    set({ navWidthPx: clamped })
+  },
 
   reset: () => {
     persistProjectName(null)

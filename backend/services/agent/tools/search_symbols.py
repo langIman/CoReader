@@ -1,20 +1,18 @@
-"""Agent Tool：BM25 语义搜索符号。
-
-对应 QA_REFACTOR_PLAN.md §2.8。本工具是 retrieval.py 的薄适配层：
-- 从 file_store 拿当前 project_name
-- 委托给 retrieve_symbols_for_question
-"""
+"""Agent Tool：BM25 语义搜索符号。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from backend.dao.file_store import get_project_name
 from backend.services.agent.tools.base import BaseTool
 from backend.services.qa.retrieval import retrieve_symbols_for_question
 
 
 class SearchSymbolsTool(BaseTool):
+
+    def __init__(self, project_name: str) -> None:
+        self._project_name = project_name
+
     @property
     def name(self) -> str:
         return "search_symbols"
@@ -46,15 +44,9 @@ class SearchSymbolsTool(BaseTool):
             "required": ["query"],
         }
 
-    async def execute(
-        self, *, query: str, top_k: int = 10, **kwargs: Any,
-    ) -> Any:
-        project_name = get_project_name()
-        if not project_name:
-            return {"error": "没有已加载的项目"}
-
+    async def execute(self, *, query: str, top_k: int = 10, **kwargs: Any) -> Any:
         top_k = max(1, min(top_k, 20))
-        hits = retrieve_symbols_for_question(project_name, query, k=top_k)
+        hits = retrieve_symbols_for_question(self._project_name, query, k=top_k)
         if not hits:
             return {"query": query, "results": [], "note": "未命中任何符号"}
         return [

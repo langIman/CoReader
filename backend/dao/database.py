@@ -123,6 +123,7 @@ def init_db() -> None:
             mode             TEXT,
             tool_events_json TEXT,
             code_refs_json   TEXT,
+            stop_reason      TEXT,
             created_at       TEXT NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES qa_conversations(id) ON DELETE CASCADE
         )
@@ -130,6 +131,61 @@ def init_db() -> None:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_qa_msg_conv
             ON qa_messages(conversation_id, id)
+    """)
+    # 兼容老库：stop_reason 列后加（阶段 5）
+    qa_msg_cols = {row[1] for row in conn.execute("PRAGMA table_info(qa_messages)")}
+    if "stop_reason" not in qa_msg_cols:
+        conn.execute("ALTER TABLE qa_messages ADD COLUMN stop_reason TEXT")
+        logger.info("qa_messages schema migrated: +stop_reason")
+    # 兼容老库：tool_chain_json 列后加（上下文管理对齐 CC）
+    if "tool_chain_json" not in qa_msg_cols:
+        conn.execute("ALTER TABLE qa_messages ADD COLUMN tool_chain_json TEXT")
+        logger.info("qa_messages schema migrated: +tool_chain_json")
+
+    # ----------------- Quiz 自测功能（QUIZ_FEATURE_PLAN.md §2.2）-----------------
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_sessions (
+            id             TEXT PRIMARY KEY,
+            project_name   TEXT NOT NULL,
+            mode           TEXT NOT NULL,
+            source_id      TEXT,
+            title          TEXT NOT NULL,
+            status         TEXT NOT NULL DEFAULT 'generating',
+            score          INTEGER NOT NULL DEFAULT 0,
+            answered_count INTEGER NOT NULL DEFAULT 0,
+            created_at     TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quiz_sessions_project
+            ON quiz_sessions(project_name, created_at DESC)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_questions (
+            id            TEXT PRIMARY KEY,
+            session_id    TEXT NOT NULL,
+            idx           INTEGER NOT NULL,
+            question_text TEXT NOT NULL,
+            options_json  TEXT NOT NULL,
+            correct_key   TEXT NOT NULL,
+            code_ref_json TEXT,
+            FOREIGN KEY (session_id) REFERENCES quiz_sessions(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quiz_questions_session
+            ON quiz_questions(session_id, idx)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_answers (
+            session_id     TEXT NOT NULL,
+            question_index INTEGER NOT NULL,
+            chosen_key     TEXT NOT NULL,
+            is_correct     INTEGER NOT NULL,
+            answered_at    TEXT NOT NULL,
+            PRIMARY KEY (session_id, question_index),
+            FOREIGN KEY (session_id) REFERENCES quiz_sessions(id) ON DELETE CASCADE
+        )
     """)
 
     # Wiki 结构变更的一次性清理：user_version 落后就清空 wiki_* 表

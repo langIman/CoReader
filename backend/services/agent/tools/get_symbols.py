@@ -3,12 +3,14 @@
 from typing import Any
 
 from backend.dao.database import get_connection
-from backend.dao.file_store import get_project_name
 from backend.services.agent.tools.base import BaseTool
 
 
 class GetSymbolsTool(BaseTool):
     """从 SQLite 查询项目中的符号定义。"""
+
+    def __init__(self, project_name: str) -> None:
+        self._project_name = project_name
 
     @property
     def name(self) -> str:
@@ -41,17 +43,13 @@ class GetSymbolsTool(BaseTool):
         }
 
     async def execute(self, *, file: str | None = None, kind: str | None = None, **kwargs: Any) -> Any:
-        project_name = get_project_name()
-        if not project_name:
-            return {"error": "没有已加载的项目"}
-
         conn = get_connection()
         try:
             query = (
                 "SELECT qualified_name, name, kind, file, line_start, line_end, "
                 "params, docstring, is_entry FROM symbols WHERE project_name = ?"
             )
-            params: list[Any] = [project_name]
+            params: list[Any] = [self._project_name]
 
             if file:
                 query += " AND file = ?"

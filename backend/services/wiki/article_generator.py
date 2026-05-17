@@ -141,7 +141,7 @@ async def _topic_recon(
             modules, ast_model, project_files,
         ),
     )
-    raw = await call_qwen(system, user, enable_thinking=False)
+    raw = await call_qwen(system, user, enable_thinking=False, per_attempt_timeout=150.0)
     try:
         data = parse_llm_json(raw)
     except Exception as e:
@@ -166,7 +166,7 @@ async def _generate_article(
     user: str,
     ast_model: ProjectAST,
 ) -> WikiPage:
-    raw = await call_qwen(system, user, enable_thinking=False)
+    raw = await call_qwen(system, user, enable_thinking=False, per_attempt_timeout=150.0)
     content_md, raw_refs = parse_llm_page_output(raw)
     code_refs = resolve_code_refs(raw_refs, ast_model)
     outgoing = extract_outgoing_links(content_md)

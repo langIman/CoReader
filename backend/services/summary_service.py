@@ -3,7 +3,7 @@ import asyncio
 import logging
 from collections import defaultdict
 
-from backend.config import SUMMARY_TRUNCATION_PERCENT, SUMMARY_FUNC_LINES
+from backend.config import QWEN_FAST_MODEL, SUMMARY_TRUNCATION_PERCENT, SUMMARY_FUNC_LINES
 from backend.dao.file_store import get_project_files, get_project_name
 from backend.dao.summary_store import save_summary, clear_project_summaries
 from backend.services.llm.llm_service import call_qwen
@@ -118,13 +118,13 @@ async def _generate_single_file_summary(
             # 第一次：用骨架
             skeleton = extract_file_skeleton(content, file_path=file_path)
             system, user = build_file_summary_prompt(file_path, skeleton)
-            summary = await call_qwen(system, user, enable_thinking=False)
+            summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
 
             if INSUFFICIENT_INFO in summary:
                 # 重传：用完整内容
                 logger.info("File %s: retrying with full content", file_path)
                 system, user = build_file_summary_prompt(file_path, content)
-                summary = await call_qwen(system, user, enable_thinking=False)
+                summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
 
                 if INSUFFICIENT_INFO in summary:
                     summary = "该文件/LLM出错"
@@ -142,12 +142,12 @@ async def _generate_folder_summary(
     """生成文件夹摘要，含重传机制。"""
     async with get_reporter().track("folder_summary", folder_path):
         system, user = build_folder_summary_prompt(folder_path, child_summaries)
-        summary = await call_qwen(system, user, enable_thinking=False)
+        summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
 
         if INSUFFICIENT_INFO in summary:
             # 重传
             logger.info("Folder %s: retrying", folder_path)
-            summary = await call_qwen(system, user, enable_thinking=False)
+            summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
             if INSUFFICIENT_INFO in summary:
                 summary = "该文件夹/LLM出错"
 
@@ -239,10 +239,10 @@ async def generate_hierarchical_summary() -> dict:
 
     async with get_reporter().track("project_summary", None):
         system, user = build_project_summary_prompt(project_name, top_summaries)
-        project_summary = await call_qwen(system, user, enable_thinking=False)
+        project_summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
 
         if INSUFFICIENT_INFO in project_summary:
-            project_summary = await call_qwen(system, user, enable_thinking=False)
+            project_summary = await call_qwen(system, user, enable_thinking=False, model=QWEN_FAST_MODEL)
             if INSUFFICIENT_INFO in project_summary:
                 project_summary = "该项目/LLM出错"
 

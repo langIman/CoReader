@@ -32,6 +32,8 @@ class QAMessage(BaseModel):
     mode: QAMode | None = None           # 仅 assistant 才有
     tool_events: list[dict[str, Any]] = Field(default_factory=list)  # deep 模式记录
     code_refs: dict[str, dict] = Field(default_factory=dict)         # ref_id → {file, start_line, end_line, symbol?}
+    stop_reason: str | None = None       # assistant 才有：completed / max_iterations / cancelled / model_error / compact_failed
+    tool_chain: list[dict] = Field(default_factory=list)  # deep 模式完整工具链（OpenAI 格式 messages），供下轮注入
     created_at: str
 
 

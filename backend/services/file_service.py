@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 
 from fastapi import HTTPException, UploadFile
 
-from backend.config import ALLOWED_EXTENSIONS, MAX_PROJECT_FILES
+from backend.config import ALLOWED_EXTENSIONS, MAX_PROJECT_FILES, QWEN_FAST_MODEL
 from backend.models.schemas import FileResponse, ProjectFileInfo, ProjectUploadResponse, ProjectSummaryResponse
 from backend.dao.file_store import (
     validate_file, store_file, store_project,
@@ -94,7 +94,7 @@ async def generate_project_summary() -> ProjectSummaryResponse:
         raise HTTPException(status_code=400, detail="No project loaded")
 
     system_prompt, user_prompt = build_summary_prompt(project_name, project_files)
-    summary = await call_qwen(system_prompt, user_prompt, enable_thinking=False)
+    summary = await call_qwen(system_prompt, user_prompt, enable_thinking=False, model=QWEN_FAST_MODEL)
     set_project_summary(summary)
 
     return ProjectSummaryResponse(summary=summary)
