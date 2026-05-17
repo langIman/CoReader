@@ -35,10 +35,18 @@ export default function WikiProgressTimeline({ events, nowMs, eventsReceivedAt }
   const scrollerRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
-  // 折叠：每个 event_id 取最新一条；按 started_at 升序
+  // 折叠：每个 event_id 取最新一条；按 started_at 升序。
+  // 防御性过滤：缺关键字段的脏事件会让 sort 抛 TypeError，进而把整棵 React
+  // 树带崩——后端任何路径漏字段都应在此被无害忽略，而不是反弹到上传页。
   const folded = useMemo(() => {
     const map = new Map<string, WikiProgressEvent>()
-    for (const ev of events) map.set(ev.event_id, ev)
+    for (const ev of events) {
+      if (!ev || typeof ev.event_id !== 'string' || typeof ev.started_at !== 'string') {
+        console.warn('[WikiProgressTimeline] 丢弃缺字段事件:', ev)
+        continue
+      }
+      map.set(ev.event_id, ev)
+    }
     return Array.from(map.values()).sort((a, b) => a.started_at.localeCompare(b.started_at))
   }, [events])
 

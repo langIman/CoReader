@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useWikiStore } from '../../store/useWikiStore'
+import { loadPendingTask, persistPendingTask, useWikiStore } from '../../store/useWikiStore'
 import { getWikiDocument, pollWikiStatus, startWikiGeneration, uploadProject } from '../../services/api'
 import ThemeToggle from '../common/ThemeToggle'
 import WikiProgressTimeline from './WikiProgressTimeline'
@@ -70,6 +70,39 @@ export default function UploadView() {
     }
   }, [])
 
+  // 接管「轮询 → 加载文档 → 入 store」三段。被两条入口共用：
+  //   1. runPipeline：本次会话内新发起的上传
+  //   2. 启动时 resumePending：上次未完成的任务（页面刷新/崩溃后）
+  const watchTask = useCallback(
+    async (params: { taskId: string; projectName: string; pipelineStart: number }) => {
+      const { taskId, projectName, pipelineStart } = params
+      setGenerateTaskId(taskId)
+      setGenerateStatus('pending')
+      setMessage('正在分析项目结构（概览页 + 模块页）...')
+      setGenerateEvents([])
+      setEventsReceivedAt(Date.now())
+
+      const final = await pollWikiStatus(taskId, (s) => {
+        setGenerateStatus(s.status, s.message)
+        setGenerateEvents(s.events ?? [])
+        setEventsReceivedAt(Date.now())
+        if (s.status === 'running') setMessage('LLM 生成中...')
+      })
+      if (final.status === 'failed') {
+        throw new Error(final.message || 'Wiki 生成失败')
+      }
+
+      setPhase('loading')
+      setMessage('加载 Wiki 文档...')
+      const doc = await getWikiDocument(projectName)
+      const totalMs = Date.now() - pipelineStart
+      setLastGenerationDurationMs(totalMs)
+      setStartedAt(null)
+      setWiki(doc)
+    },
+    [setGenerateTaskId, setGenerateStatus, setGenerateEvents, setLastGenerationDurationMs, setWiki]
+  )
+
   const runPipeline = useCallback(
     async (files: FileList | { path: string; file: File }[]) => {
       const pipelineStart = Date.now()
@@ -87,38 +120,62 @@ export default function UploadView() {
         setPhase('generating')
         setMessage('启动 Wiki 生成...')
         const task = await startWikiGeneration(uploaded.project_name)
-        setGenerateTaskId(task.task_id)
-        setGenerateStatus('pending')
-
-        setMessage('正在分析项目结构（概览页 + 模块页）...')
-        setGenerateEvents([])
-        setEventsReceivedAt(Date.now())
-        const final = await pollWikiStatus(task.task_id, (s) => {
-          setGenerateStatus(s.status, s.message)
-          setGenerateEvents(s.events ?? [])
-          setEventsReceivedAt(Date.now())
-          if (s.status === 'running') setMessage('LLM 生成中...')
+        // 任务持久化：即使现在页面刷新，下次启动会自动恢复轮询
+        persistPendingTask({
+          task_id: task.task_id,
+          project_name: uploaded.project_name,
+          started_at: pipelineStart,
         })
-        if (final.status === 'failed') {
-          throw new Error(final.message || 'Wiki 生成失败')
-        }
 
-        setPhase('loading')
-        setMessage('加载 Wiki 文档...')
-        const doc = await getWikiDocument(uploaded.project_name)
-        const totalMs = Date.now() - pipelineStart
-        setLastGenerationDurationMs(totalMs)
-        setStartedAt(null)
-        setWiki(doc)
+        await watchTask({
+          taskId: task.task_id,
+          projectName: uploaded.project_name,
+          pipelineStart,
+        })
+        persistPendingTask(null)
       } catch (err) {
         console.error('[runPipeline] 流水线失败:', err)
+        persistPendingTask(null)
         setStartedAt(null)
         setPhase('error')
         setMessage(err instanceof Error ? err.message : '未知错误')
       }
     },
-    [setProject, setGenerateTaskId, setGenerateStatus, setGenerateEvents, setWiki, setLastGenerationDurationMs]
+    [setProject, watchTask]
   )
+
+  // 启动时：若 localStorage 里有未完成任务，自动恢复轮询。
+  // 这一步把"白屏刷新"这个偶发 bug 在体感上消灭：用户刷新或浏览器自己崩了，
+  // 重进页面后会从模块划分/页面生成的当前状态继续走，不需要重新上传。
+  useEffect(() => {
+    const pending = loadPendingTask()
+    if (!pending) return
+    // 项目源码本地丢了（state 在内存里），但后端 SQLite 仍有，让用户能继续看进度
+    void (async () => {
+      console.info('[resumePending] 检测到未完成任务，恢复轮询:', pending)
+      const resumeStart = pending.started_at || Date.now()
+      setStartedAt(resumeStart)
+      setLastGenerationDurationMs(null)
+      setPhase('generating')
+      setMessage('恢复未完成的 Wiki 生成任务...')
+      try {
+        await watchTask({
+          taskId: pending.task_id,
+          projectName: pending.project_name,
+          pipelineStart: resumeStart,
+        })
+        persistPendingTask(null)
+      } catch (err) {
+        console.error('[resumePending] 恢复失败:', err)
+        persistPendingTask(null)
+        setStartedAt(null)
+        setPhase('error')
+        setMessage(err instanceof Error ? err.message : '恢复任务失败')
+      }
+    })()
+    // 仅启动时跑一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleFolderSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {

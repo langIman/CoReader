@@ -10,6 +10,8 @@ interface CodeDrawerState {
 
 const PROJECT_NAME_STORAGE_KEY = 'coreader.wiki.projectName'
 const NAV_WIDTH_STORAGE_KEY = 'coreader.wiki.navWidthPx'
+// 进行中的 wiki 生成任务持久化：刷新/崩溃后能恢复轮询，不丢进度
+const PENDING_TASK_STORAGE_KEY = 'coreader.wiki.pendingTask'
 const NAV_WIDTH_MIN = 180
 const NAV_WIDTH_MAX = 480
 const NAV_WIDTH_DEFAULT = 256
@@ -30,6 +32,43 @@ function loadPersistedProjectName(): string | null {
     return null
   }
 }
+
+interface PendingTask {
+  task_id: string
+  project_name: string
+  started_at: number
+}
+
+function persistPendingTask(task: PendingTask | null) {
+  try {
+    if (task) localStorage.setItem(PENDING_TASK_STORAGE_KEY, JSON.stringify(task))
+    else localStorage.removeItem(PENDING_TASK_STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+function loadPendingTask(): PendingTask | null {
+  try {
+    const raw = localStorage.getItem(PENDING_TASK_STORAGE_KEY)
+    if (!raw) return null
+    const obj = JSON.parse(raw)
+    if (
+      obj &&
+      typeof obj.task_id === 'string' &&
+      typeof obj.project_name === 'string' &&
+      typeof obj.started_at === 'number'
+    ) {
+      return obj as PendingTask
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export { persistPendingTask, loadPendingTask }
+export type { PendingTask }
 
 function loadNavWidth(): number {
   try {
@@ -103,6 +142,15 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   },
 
   rehydrateFromStorage: async () => {
+    // 进行中任务优先：如果有未完成的 wiki 生成任务，不要去拉 wiki 文档
+    // （文档还不存在），让 UploadView 拿到 pendingTask 自行恢复轮询即可。
+    const pending = loadPendingTask()
+    if (pending) {
+      console.info('[rehydrateFromStorage] 检测到未完成任务，跳过 wiki 拉取:', pending)
+      set({ projectName: pending.project_name })
+      return
+    }
+
     const name = loadPersistedProjectName()
     if (!name) return
     set({ rehydrating: true, projectName: name })
@@ -126,8 +174,12 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
       })
     } catch (e) {
       console.warn('[rehydrateFromStorage] 加载已保存项目失败，回退到上传页:', e)
-      persistProjectName(null)
-      set({ projectName: null })
+      // 防御：rehydrate 期间用户可能已经开始新上传，不要清掉新的 projectName
+      const currentPending = loadPendingTask()
+      if (!currentPending) {
+        persistProjectName(null)
+        set({ projectName: null })
+      }
     } finally {
       set({ rehydrating: false })
     }

@@ -102,7 +102,10 @@ def _normalize_tool_call_arguments(message: dict) -> None:
 # ---------------- 网关瞬时错误重试（5xx / 524 等） -----------
 
 _RETRY_STATUSES = {429, 502, 503, 504, 524}
-_RETRY_DELAYS = (2.0, 5.0, 10.0)  # 短退避：偶发卡死靠多次重试摊开概率，不靠等
+_RETRY_DELAYS = (2.0, 5.0)  # 短退避：偶发卡死靠多次重试摊开概率，不靠等
+# 共 3 次尝试（initial + 2 retries）。之前是 4 次，但配合 Context 层 30KB
+# 工具结果上限后，超时几乎只剩下网关瞬时故障场景，3 次足够覆盖；4 次会让用户
+# 在罕见持久故障时白等 ~6 分钟，体验远比省那点 retry 概率差。
 # 429: sub2api "All available accounts exhausted" — 账号池被打爆，等几秒池子恢复
 # 502/503/504/524: 网关瞬时故障
 

@@ -43,7 +43,9 @@ export default function WikiPageView({ pageId }: Props) {
   }
 
   return (
-    <div className="flex-1 overflow-auto">
+    // h-full 而非 flex-1：父容器是 block 不是 flex，flex-1 在这里不生效，
+    // 会导致没有明确高度从而 overflow-auto 失效（页面整个滚不动）。
+    <div className="h-full overflow-auto">
       <div className="max-w-4xl mx-auto px-8 py-6">
         <header className="mb-4 pb-3 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between gap-3 mb-1">

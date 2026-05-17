@@ -13,6 +13,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# 单个 tool result 写入 context 时的硬上限（字符）。
+# 防御任何工具误返回大块（如调用图全量、文件全文）打爆下一轮 LLM 调用上下文。
+# 30KB 足够装下任意结构化结果的核心信息；超过的会被截断并附上说明。
+MAX_TOOL_RESULT_CHARS = 30_000
+
+
 class Context:
     """Agent 对话上下文。
 
@@ -35,6 +41,17 @@ class Context:
         self._messages.append(message)
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
+        if len(content) > MAX_TOOL_RESULT_CHARS:
+            logger.warning(
+                "Tool result truncated: tool=%s original=%d chars cap=%d chars",
+                name, len(content), MAX_TOOL_RESULT_CHARS,
+            )
+            head = content[: MAX_TOOL_RESULT_CHARS - 200]
+            content = (
+                f"{head}\n\n"
+                f"[结果被截断：原始 {len(content)} 字符，超过 {MAX_TOOL_RESULT_CHARS} 上限。"
+                f"请增加过滤参数或缩小查询范围后重试。]"
+            )
         self._messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,

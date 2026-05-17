@@ -41,6 +41,8 @@ class GetCallEdgesTool(BaseTool):
             "required": [],
         }
 
+    _MAX_ROWS = 200  # 无过滤时全表可达上万条，必须设上限防止吃满上下文
+
     async def execute(self, *, caller: str | None = None, callee: str | None = None, **kwargs: Any) -> Any:
         conn = get_connection()
         try:
@@ -57,8 +59,15 @@ class GetCallEdgesTool(BaseTool):
                 query += " AND (callee_name = ? OR callee_resolved = ?)"
                 params.extend([callee, callee])
 
+            # 多取 1 条用于检测截断；不需要单独 COUNT 查询
+            query += " LIMIT ?"
+            params.append(self._MAX_ROWS + 1)
+
             rows = conn.execute(query, params).fetchall()
-            return [
+            truncated = len(rows) > self._MAX_ROWS
+            rows = rows[: self._MAX_ROWS]
+
+            edges = [
                 {
                     "caller": r[0],
                     "callee_name": r[1],
@@ -69,5 +78,16 @@ class GetCallEdgesTool(BaseTool):
                 }
                 for r in rows
             ]
+
+            if not truncated:
+                return edges
+
+            return {
+                "edges": edges,
+                "_truncated": (
+                    f"结果超过 {self._MAX_ROWS} 条已截断。"
+                    "请使用 caller 或 callee 参数缩小范围后重试。"
+                ),
+            }
         finally:
             conn.close()
