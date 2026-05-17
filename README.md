@@ -9,6 +9,8 @@
 
 </div>
 
+![CoReader 主界面预览](assets/preview.png)
+
 ---
 
 ## 为什么有它
