@@ -39,5 +39,10 @@ test/.cache/
 # 本地暂存（个人文件，不入库）
 tempWorkplace/
 
+# 项目元信息（不入正式版）
+CLAUDE.md
+Makefile
+docs/
+
 # Eval 报告（运行时生成）
 eval/report/*.json
