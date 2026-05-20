@@ -34,7 +34,7 @@ async def generate_module_split() -> dict:
 
     # 用 Skill 驱动 Agent（Agent 自主收集数据、自主验证覆盖率）
     skill = ModuleSplitSkill(project_name)
-    agent = Agent(system_prompt=skill.system_prompt, tools=skill.tools)
+    agent = Agent(system_prompt=skill.system_prompt, tools=skill.tools, enable_thinking=False)
     user_input = skill.build_user_input({"project_name": project_name})
     raw = await agent.run(user_input)
 
